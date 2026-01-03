@@ -22,7 +22,16 @@ import torch
 import time
 import os
 import sys
+import warnings
+import io
+import atexit
 from pathlib import Path
+from typing import Optional
+
+try:
+    import torchvision.io as tvio
+except Exception:
+    tvio = None
 
 # Isaac Lab imports (must be before policy imports)
 from isaaclab.app import AppLauncher
@@ -58,6 +67,33 @@ import Galaxea_Lab_External.tasks
 # Import policy wrapper
 sys.path.insert(0, str(Path(__file__).parent))
 from policy_wrapper import ACTPolicyWrapper, DiffusionPolicyWrapper, BCPolicyWrapper, DataReplayPolicyWrapper
+
+
+class _Tee(io.TextIOBase):
+    """Write every message to multiple streams (used to mirror stdout/stderr to log)."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+
+def setup_logging(artifact_dir: Path, run_timestamp: str) -> Path:
+    """Mirror stdout/stderr to a timestamped log file next to the video outputs."""
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    log_path = artifact_dir / f"video_{run_timestamp}.log"
+    log_file = open(log_path, "a", buffering=1)
+    atexit.register(log_file.close)
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+    return log_path
 
 
 def load_replay_actions(data_path: str):
@@ -190,7 +226,8 @@ def get_observations(env, policy_wrapper):
     return qpos, images
 
 
-def run_episode(env, policy_wrapper, episode_idx: int, save_video: bool = False):
+def run_episode(env, policy_wrapper, episode_idx: int, save_video: bool = False,
+                artifact_dir: Optional[Path] = None, video_basename: Optional[str] = None):
     """
     Run one episode with the policy.
     
@@ -221,6 +258,19 @@ def run_episode(env, policy_wrapper, episode_idx: int, save_video: bool = False)
     print(f"{'='*60}")
     
     start_time = time.time()
+
+    frames = []
+    if save_video and tvio is None:
+        warnings.warn("torchvision.io not available, disabling video capture.")
+        save_video = False
+    if save_video:
+        sim_dt = env.unwrapped.cfg.sim_dt
+        decimation = env.unwrapped.cfg.decimation
+        fps = max(1, int(round(1.0 / (sim_dt * decimation))))
+        video_dir = artifact_dir or (Path(__file__).parent / "videos")
+        video_dir.mkdir(exist_ok=True)
+        base_name = video_basename or "episode"
+        video_path = video_dir / f"{base_name}_ep{episode_idx + 1}.mp4"
     
     while True:
         # Get observations in policy format
@@ -245,6 +295,12 @@ def run_episode(env, policy_wrapper, episode_idx: int, save_video: bool = False)
         if done:
             success = info.get('success', False)
             break
+        
+        # Save video frame (use first env, first camera)
+        if save_video:
+            frame = images[0, 0].detach().clamp(0, 1).mul(255).to(torch.uint8)
+            frame = frame.permute(1, 2, 0).cpu()  # (H, W, C)
+            frames.append(frame)
     
     elapsed = time.time() - start_time
     
@@ -257,6 +313,15 @@ def run_episode(env, policy_wrapper, episode_idx: int, save_video: bool = False)
     print(f"  - Success: {success}")
     print(f"  - FPS: {episode_length/elapsed:.1f}")
     print(f"{'-'*60}")
+
+    # Write video to disk
+    if save_video and len(frames) > 0:
+        try:
+            video_tensor = torch.stack(frames, dim=0)  # (T, H, W, C)
+            tvio.write_video(str(video_path), video_tensor, fps=fps, video_codec="h264")
+            print(f"✓ Saved video to: {video_path}")
+        except Exception as e:
+            warnings.warn(f"Failed to write video: {e}")
     
     return episode_reward, episode_length, success
 
@@ -332,9 +397,14 @@ def run_replay_episode(env, replay_actions, episode_idx):
 def main():
     """Main deployment function"""
     
+    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+    artifact_dir = Path(__file__).parent / "videos"
+    log_path = setup_logging(artifact_dir, run_timestamp)
+
     print("\n" + "="*60)
     print("STANDARDIZED POLICY DEPLOYMENT")
     print("="*60)
+    print(f"Logging to: {log_path}")
     print(f"Policy type: {args_cli.policy_type}")
     print(f"Checkpoint: {args_cli.checkpoint}")
     print(f"Task: {args_cli.task}")
@@ -405,7 +475,9 @@ def main():
                     env, 
                     policy_wrapper,
                     episode_idx,
-                    save_video=args_cli.save_video
+                    save_video=args_cli.save_video,
+                    artifact_dir=artifact_dir,
+                    video_basename=f"video_{run_timestamp}"
                 )
             else:
                 # Replay mode

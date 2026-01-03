@@ -16,6 +16,7 @@ from PIL import Image
 from collections.abc import Sequence
 import os
 import isaaclab.sim as sim_utils
+from pathlib import Path
 from isaaclab.assets import Articulation, AssetBase, RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
@@ -148,6 +149,9 @@ class GalaxeaLabExternalEnv(DirectRLEnv):
 
         # add ground plane
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        self.scene.sensors["head_camera"] = self.head_camera
+        self.scene.sensors["left_hand_camera"] = self.left_hand_camera
+        self.scene.sensors["right_hand_camera"] = self.right_hand_camera
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
         # we need to explicitly filter collisions for CPU simulation
@@ -608,7 +612,9 @@ class GalaxeaLabExternalEnv(DirectRLEnv):
         self.table.write_root_state_to_sim(root_state)
 
        
-        self.save_hdf5_file_name = '../data/data_' + datetime.now().strftime("%Y%m%d_%H%M%S") + '.hdf5'
+        data_dir = Path(__file__).resolve().parent / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        self.save_hdf5_file_name = str(data_dir / f"data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.hdf5")
 
 
         self.initial_root_state = self._randomize_object_positions([self.planetary_carrier, self.ring_gear, 

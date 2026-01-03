@@ -17,6 +17,21 @@ from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 import sys
 import os
+from pathlib import Path
+
+# Allow this module to work both as a package import (-m) and as a direct script import.
+# When run directly (e.g., python deploy_policy.py), __package__ is empty and relative
+# imports fail. We add the package root to sys.path and set __package__ so that
+# dotted imports below resolve.
+if __package__ in (None, ""):
+    this_dir = Path(__file__).resolve().parent
+    package_root = this_dir
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    parent_root = package_root.parent
+    if str(parent_root) not in sys.path:
+        sys.path.insert(0, str(parent_root))
+    __package__ = "Galaxea_Lab_External.VLA.ACT"
 
 
 class PolicyWrapper(ABC):
@@ -135,9 +150,13 @@ class ACTPolicyWrapper(PolicyWrapper):
                 sys.path.insert(0, act_dir)
                 sys.path.insert(0, os.path.join(act_dir, 'detr'))
             
-            # Import ACT modules
-            from .act.policy import ACTPolicy
-            from .act.constants import DT
+            # Import ACT modules (works for both package and script execution)
+            try:
+                from .act.policy import ACTPolicy
+                from .act.constants import DT
+            except ImportError:
+                from act.policy import ACTPolicy
+                from act.constants import DT
             
             self.act_dt = DT  # Should be 0.02s (50Hz)
             
