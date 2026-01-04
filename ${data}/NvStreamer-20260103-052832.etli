@@ -1,0 +1,21 @@
+7438,MarkQosNameValue,SurfaceBitDepth,8
+7438,MarkQosNameValue,AdapterWidth,1280
+7438,MarkQosNameValue,AllTransitSelectionValuesForwarded,
+7438,MarkQosNameValue,IsCoProc,0
+7438,MarkQosNameValue,DriverBranch,NVIDIA UNIX x86_64 Kernel Module  580.65.06  Sun Jul 27 07:14:19 UTC 2025
+7438,MarkQosNameValue,AdapterRefreshRate,60.0
+7438,MarkQosNameValue,Device,NVIDIA L40S
+7438,MarkQosNameValue,AdapterHeight,720
+7438,MarkQosNameValue,TransitSelectionValueForwarded,0
+7438,MarkQosNameValue,LtrEnabled,0
+7438,MarkQosNameValue,EncoderInputSurfaceFormat,invalid_format
+7438,MarkQosNameValue,AllTransitSelectionValuesApplied,
+7438,MarkQosNameValue,TransitSelectionValueApplied,0
+7438,MarkQosNameValue,DriverVersion,580.65
+7438,MarkQosNameValue,DataChannelMode,DcSCTP
+7438,MarkQos,StreamServerBackendMode is 2
+7438,MarkQos,stream 0 nvtime::sessionStartTime[us] on server: 3391039902
+7438,MarkQos,RL QOS disabled for stream: 0
+7438,MarkGsBlobStats,
+7502,MarkQos,Number of delayed commands: 0
+7502,MarkGsBlobStats,
