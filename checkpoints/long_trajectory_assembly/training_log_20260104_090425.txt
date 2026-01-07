@@ -1,0 +1,6 @@
+Training completed at: 2026-01-04 09:05:57.473961
+Task: Galaxea-LongTrajectoryAssembly-Direct-v0
+Checkpoint directory: checkpoints/long_trajectory_assembly
+
+Results:
+  Policy_Approach (Shared): FAILED
