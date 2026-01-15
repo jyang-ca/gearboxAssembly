@@ -290,7 +290,7 @@ def main():
                  log_debug(f"[DEBUG] front_camera type: {type(base_env.front_camera)}")
 
             cameras = {
-                'head': base_env.head_camera,
+                # 'head': base_env.head_camera,
                 # 'left': base_env.left_hand_camera,
                 # 'right': base_env.right_hand_camera,
                 'front': getattr(base_env, 'front_camera', None)
