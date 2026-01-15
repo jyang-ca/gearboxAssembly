@@ -36,7 +36,7 @@ from isaaclab.sensors import Camera
 
 import h5py
 
-from Galaxea_Lab_External.vision.vision_pose_estimator import VisionPoseEstimator
+# VisionPoseEstimator will be imported conditionally when needed
 
 class GalaxeaLabExternalEnv(DirectRLEnv):
     cfg: GalaxeaLabExternalEnvCfg
@@ -490,8 +490,16 @@ class GalaxeaLabExternalEnv(DirectRLEnv):
         for env_idx in range(num_envs):
             sim_utils.bind_physics_material(f"/World/envs/env_{env_idx}/Table/table/body_whiteLarge", "/World/Materials/table_material")
         
-        # Initialize Vision Estimator
-        self.vision_estimator = VisionPoseEstimator(env=self)
+        # Initialize Vision Estimator (conditionally)
+        # If vision_estimator was already set externally (e.g., by rule_based_agent.py with --use_vision),
+        # we keep it. Otherwise, we don't initialize it (GT mode by default).
+        if not hasattr(self, 'vision_estimator') or self.vision_estimator is None:
+            # GT mode - no vision estimator needed
+            self.vision_estimator = None
+            print("[INFO] GalaxeaLabExternalEnv: Vision estimator not initialized (GT mode)")
+        else:
+            print("[INFO] GalaxeaLabExternalEnv: Using existing vision estimator (Vision mode)")
+        
         self.estimated_state = {} # Will hold the vision-based object states
         
     def _randomize_object_positions(self, object_list: list, object_names: list,

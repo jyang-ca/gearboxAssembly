@@ -973,21 +973,30 @@ class GalaxeaRulePolicy:
         
         sim_dt = self.sim.get_physics_dt()
         
+        
         # 1. Go to Gear (Current Pos on Carrier/Table)
         if rel_count < steps[0]:
-             # Get current gear pos
-             # Direct Vision Check to avoid GT fallback if not visible
-             poses = self.vision_estimator.get_3d_poses()
+             # Get current gear pos using get_object_pose (supports both Vision and GT)
              obj_name = f"sun_planetary_gear_{gear_id}"
              
-             if obj_name not in poses or not poses[obj_name]['available']:
-                 # Wait for detection
-                 print(f"[INFO] Recovery: Waiting for vision detection of {obj_name}...")
-                 return None, None
+             # Use get_object_pose which handles both Vision and GT modes
+             if self.use_vision:
+                 # Vision mode: Direct check to avoid GT fallback if not visible
+                 poses = self.vision_estimator.get_3d_poses()
                  
-             pose = poses[obj_name]
-             gear_pos = pose['position'].unsqueeze(0)
-             gear_rot = pose['orientation'].unsqueeze(0)
+                 if obj_name not in poses or not poses[obj_name]['available']:
+                     # Wait for detection
+                     print(f"[INFO] Recovery: Waiting for vision detection of {obj_name}...")
+                     return None, None
+                     
+                 pose = poses[obj_name]
+                 gear_pos = pose['position'].unsqueeze(0)
+                 gear_rot = pose['orientation'].unsqueeze(0)
+             else:
+                 # GT mode: Use get_object_pose
+                 pose = self.get_object_pose(obj_name)
+                 gear_pos = pose['position'].unsqueeze(0)
+                 gear_rot = pose['orientation'].unsqueeze(0)
              
              target_pos = gear_pos + torch.tensor([self.TCP_offset_x, 0.0, self.TCP_offset_z], device=self.sim.device)
              # Use actual gear Z + higher offset for safe hover approach (Square Path)
@@ -1000,6 +1009,7 @@ class GalaxeaRulePolicy:
              action, joint_ids = self.move_robot_to_position(arm_entity_cfg, gripper_entity_cfg, diff_ik_controller, 
                                     target_pos, target_ori, None)
              return action, joint_ids
+
         
         # 2. Lower to Grasp
         if rel_count < steps[1]:

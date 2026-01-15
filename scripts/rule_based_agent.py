@@ -24,6 +24,8 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--no_action", action="store_true", default=False, help="Do not apply actions to the robot.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument("--use_gt", action="store_true", default=True, help="Use ground truth positions instead of vision detection (default: True).")
+parser.add_argument("--use_vision", action="store_true", default=False, help="Use vision-based detection instead of ground truth.")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -88,14 +90,31 @@ def main():
     if args_cli.video:
         env.unwrapped.sim.set_camera_view(eye=[1.5, 0.0, 1.5], target=[0.5, 0, 1])
 
-    # Initialize Vision System
-    # Note: Using absolute path import or ensuring python path logic
-    from Galaxea_Lab_External.vision.vision_pose_estimator import VisionPoseEstimator
-    vision_system = VisionPoseEstimator(env)
-    print("[INFO] Vision System Initialized (REAL Vision Mode: Depth + 2D bbox)")
-    
-    # Set vision_estimator on environment for policy to use
-    env.unwrapped.vision_estimator = vision_system
+    # Initialize Vision System (conditionally based on --use_vision flag)
+    vision_system = None
+    if args_cli.use_vision:
+        # Note: Using absolute path import or ensuring python path logic
+        from Galaxea_Lab_External.vision.vision_pose_estimator import VisionPoseEstimator
+        vision_system = VisionPoseEstimator(env)
+        print("[INFO] Vision System Initialized (REAL Vision Mode: Depth + 2D bbox)")
+        
+        # Set vision_estimator on environment for policy to use
+        env.unwrapped.vision_estimator = vision_system
+        
+        # Warm-up Loop for Vision (10 steps)
+        print("[INFO] Warming up vision system...")
+        warmup_steps = 10
+        
+        # Initialize zero action with current joint positions (State Holding)
+        current_joint_pos = env.unwrapped.joint_pos.clone() # (num_envs, num_dof)
+        warmup_action = current_joint_pos.clone() # Use current pose as hold command
+        
+        for _ in range(warmup_steps):
+            env.step(warmup_action)
+            # Warmup vision to populate history buffer
+            vision_system.get_3d_poses('front_camera')
+    else:
+        print("[INFO] Using Ground Truth (GT) positions (default mode)")
     
     # ---------------------------------------------------------
     # Rule Based Policy Initialization
@@ -107,38 +126,7 @@ def main():
     
     policy = GalaxeaRulePolicy(sim_context, scene, obj_dict, vision_estimator=vision_system)
     
-    # Warm-up Loop for Vision (10 steps)
-    print("[INFO] Warming up vision system...")
-    warmup_steps = 10
-    
-    # Initialize zero action with current joint positions (State Holding)
-    # This prevents the robot from snapping to 0.0 (which might be invalid or huge jump)
-    current_joint_pos = env.unwrapped.joint_pos.clone() # (num_envs, num_dof)
-    action_dim = env.action_space.shape
-    
-    if len(action_dim) == 1: # Single env usually has shape (Action_dim,) but vectorized env (Num_envs, Action_dim)
-         # Check env.action_space
-         pass
-    
-    # Check shape compatibility
-    # env.action_space is typicaly Box(high, low, shape)
-    # If vectorized, the step expects (num_envs, action_dim)
-    
-    warmup_action = current_joint_pos.clone() # Use current pose as hold command
-    
-    # If the action space is different from joint space (e.g. subset), we need to be careful.
-    # But here GalaxeaLabAgentEnv._joint_idx seems to cover mapped joints.
-    # Let's hope action space == joint_pos space size-wise or we check.
-    # In GalaxeaLabAgentEnvCfg: action_space = 14
-    # Robots joints: 6+6+1+1 = 14. Matches.
-    
-    # The action required by env.step() is the full action vector
-    
-    for _ in range(warmup_steps):
-        env.step(warmup_action)
-        # Warmup vision to populate history buffer
-        vision_system.get_3d_poses('front_camera')
-    
+
     # Prepare Policy Plan
     policy.set_initial_root_state(initial_root_state)
     policy.prepare_mounting_plan()
@@ -168,11 +156,14 @@ def main():
                 print(f"[INFO] Video length reached: {args_cli.video_length} steps. Stopping...")
                 break
 
-            # Vision Step: Get Detections (Logging only)
-            detections = vision_system.get_oracle_detections('front_camera')
-            if step_count % 50 == 0 and len(detections) > 0:
-                 # print(f"[Vision] Step {step_count}: Detected {len(detections)} objects in Front Camera")
-                 pass
+
+            # Vision Step: Get Detections (Logging only) - only if using vision
+            if vision_system is not None:
+                detections = vision_system.get_oracle_detections('front_camera')
+                if step_count % 50 == 0 and len(detections) > 0:
+                     # print(f"[Vision] Step {step_count}: Detected {len(detections)} objects in Front Camera")
+                     pass
+
 
             # Get Action from Policy
             policy_action, joint_ids = policy.get_action()
