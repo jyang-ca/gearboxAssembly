@@ -57,8 +57,12 @@ class GalaxeaRulePolicy:
         self.use_vision = (vision_estimator is not None)
         if self.use_vision:
             print("[INFO] GalaxeaRulePolicy: Using REAL Vision-based pose estimation (Depth + 2D bbox)")
+            print("[WARN] GT fallback is DISABLED in vision mode - will use cached poses if vision fails")
+            # Pose cache: stores last valid vision pose for each object
+            self.pose_cache = {}
         else:
             print("[INFO] GalaxeaRulePolicy: Using Ground Truth poses")
+            self.pose_cache = None
 
         # Define pin positions in local coordinates (relative to planetary carrier)
         self.pin_local_positions = [
@@ -279,13 +283,17 @@ class GalaxeaRulePolicy:
         
     def get_object_pose(self, obj_name):
         """
-        Get object pose from Vision or GT (fallback).
+        Get object pose from Vision or GT.
+        
+        CRITICAL: In vision mode, NEVER use GT data - this will cause disqualification!
+        Instead, use cached pose from last valid detection.
         
         Args:
             obj_name: Name of object (e.g., 'sun_planetary_gear_1', 'ring_gear')
         
         Returns:
             dict: {'position': torch.Tensor([x,y,z]), 'orientation': torch.Tensor([w,x,y,z])}
+            None: If vision data not available and no cached pose exists
         """
         if self.use_vision:
             # Use REAL vision-based pose estimation (Depth + 2D bbox)
@@ -306,18 +314,26 @@ class GalaxeaRulePolicy:
                         
                     # print(f"[INFO] Correcting Z for {obj_name}: {pose['position'][2]:.4f} -> {self.table_height + part_h}")
                     pose['position'][2] = self.table_height + part_h
-                    
+                
+                # Cache this valid pose
+                self.pose_cache[obj_name] = {
+                    'position': pose['position'].clone(),
+                    'orientation': pose['orientation'].clone()
+                }
                 return pose
             else:
-                # Fallback to GT if vision fails
-                print(f"[WARN] Vision failed for {obj_name}, using GT fallback")
-                state = self.obj_dict[obj_name].data.root_state_w[0]
-                return {
-                    'position': state[:3].clone(),
-                    'orientation': state[3:7].clone()
-                }
+                # CRITICAL: DO NOT use GT in vision mode!
+                # Use cached pose from last valid detection instead
+                if obj_name in self.pose_cache:
+                    print(f"[WARN] Vision unavailable for {obj_name}, using CACHED pose (not GT)")
+                    return self.pose_cache[obj_name]
+                else:
+                    print(f"[ERROR] Vision unavailable for {obj_name} and NO cached pose exists!")
+                    print(f"[ERROR] Waiting for vision system to detect {obj_name}...")
+                    # Return None - caller must handle this case
+                    return None
         else:
-            # Use GT directly
+            # Use GT directly (only in non-vision mode)
             state = self.obj_dict[obj_name].data.root_state_w[0]
             return {
                 'position': state[:3].clone(),
@@ -629,14 +645,21 @@ class GalaxeaRulePolicy:
                 # Update to use real-time position
                 # Use vision-based pose estimation
                 pose = self.get_object_pose(f"sun_planetary_gear_{gear_id}")
-                root_state = torch.cat([pose['position'], pose['orientation']]).unsqueeze(0)
                 
-                target_position = root_state[:, :3].clone()
-                target_orientation = root_state[:, 3:7].clone()
+                # Handle case where vision data is not yet available
+                if pose is None:
+                    print(f"[WARN] Vision data not available for sun_planetary_gear_{gear_id}, skipping pose update")
+                    # Keep using previously latched position
+                    # This typically only happens in first few frames
+                else:
+                    root_state = torch.cat([pose['position'], pose['orientation']]).unsqueeze(0)
+                    
+                    target_position = root_state[:, :3].clone()
+                    target_orientation = root_state[:, 3:7].clone()
 
-                # Apply offsets
-                target_position[:, 2] = self.table_height + self.grasping_height + obj_height_offset
-                target_position = target_position + torch.tensor([self.TCP_offset_x, 0.0, self.TCP_offset_z], device=self.sim.device)
+                    # Apply offsets
+                    target_position[:, 2] = self.table_height + self.grasping_height + obj_height_offset
+                    target_position = target_position + torch.tensor([self.TCP_offset_x, 0.0, self.TCP_offset_z], device=self.sim.device)
             
             self.current_target_position = target_position
             self.current_target_orientation = target_orientation
@@ -740,7 +763,7 @@ class GalaxeaRulePolicy:
                                     gripper_entity_cfg: SceneEntityCfg):
 
         obj_height_offset = 0.0
-        mount_height_offset = 0.023
+        mount_height_offset = 0.010  # Reduced from 0.023 to 0.010 for deeper insertion
 
         if gear_id == 4:
             # Use vision-based pose estimation
@@ -750,7 +773,7 @@ class GalaxeaRulePolicy:
                 self.current_target_position = root_state[:, :3].clone()
             # planetary_carrier_quat = root_state[:, 3:7].clone()
             obj_height_offset = 0.01
-            mount_height_offset = 0.03
+            mount_height_offset = 0.015  # Reduced from 0.03 to 0.015 for deeper insertion
 
         elif gear_id == 6: # Reducer
             # Use vision-based pose estimation
@@ -760,7 +783,7 @@ class GalaxeaRulePolicy:
                 self.current_target_position = root_state[:, :3].clone()
                 self.current_target_orientation = root_state[:, 3:7].clone()
             obj_height_offset = 0.023 + 0.02
-            mount_height_offset = 0.025
+            mount_height_offset = 0.015  # Reduced from 0.025 to 0.015 for deeper insertion
 
 
         else: # Mount the gear on the planetary carrier

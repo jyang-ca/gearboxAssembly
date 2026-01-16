@@ -135,10 +135,10 @@ class VisionPoseEstimator:
             3: 'planetary_carrier'
         }
         
-        # History Buffer for Smoothing
+        # History Buffer for Smoothing (Improved settings)
         self.pose_history = {} # name -> list of poses (or None)
-        self.history_len = 10
-        self.min_confidence = 3 # Detected in at least K of last N frames
+        self.history_len = 20  # Increased from 10 to 20 for more robust estimation
+        self.min_confidence = 10  # Increased from 3 to 10 (50% detection rate required)
         
     def get_oracle_detections(self, camera_name):
         """
@@ -306,7 +306,7 @@ class VisionPoseEstimator:
         u_center = (bbox[0] + bbox[2]) / 2.0
         v_center = (bbox[1] + bbox[3]) / 2.0
         
-        # 2. Get median depth in bbox region (more robust than center point)
+        # 2. Get median depth in bbox region with outlier filtering (IMPROVED)
         u_min, v_min, u_max, v_max = [int(x) for x in bbox]
         u_min = max(0, u_min)
         v_min = max(0, v_min)
@@ -319,7 +319,32 @@ class VisionPoseEstimator:
             depth = depth_map[v_int, u_int]
         else:
             bbox_region = depth_map[v_min:v_max, u_min:u_max]
-            depth = torch.median(bbox_region)
+            
+            # Filter out invalid depths (0 or too far)
+            valid_depths = bbox_region[(bbox_region > 0.1) & (bbox_region < 3.0)]
+            
+            if len(valid_depths) > 10:
+                # Use IQR method to remove outliers
+                q25 = torch.quantile(valid_depths, 0.25)
+                q75 = torch.quantile(valid_depths, 0.75)
+                iqr = q75 - q25
+                
+                # Keep values within 1.5 * IQR range
+                lower_bound = q25 - 1.5 * iqr
+                upper_bound = q75 + 1.5 * iqr
+                
+                filtered_depths = valid_depths[(valid_depths >= lower_bound) & (valid_depths <= upper_bound)]
+                
+                if len(filtered_depths) > 0:
+                    depth = torch.median(filtered_depths)
+                else:
+                    depth = torch.median(valid_depths)
+            elif len(valid_depths) > 0:
+                # Not enough data for IQR, just use median of valid depths
+                depth = torch.median(valid_depths)
+            else:
+                # Fallback to simple median
+                depth = torch.median(bbox_region)
         
         # 3. Pixel → Camera Frame (OpenCV convention: X-right, Y-down, Z-forward)
         fx, fy = intrinsic[0, 0], intrinsic[1, 1]
@@ -575,7 +600,7 @@ class VisionPoseEstimator:
                 self.pose_history[name].pop(0)
                 
     def get_smoothed_poses(self):
-        """Compute median pose from history."""
+        """Compute median pose from history with outlier removal (IMPROVED)."""
         smoothed = {}
         for name, history in self.pose_history.items():
             valid_poses = [p for p in history if p is not None]
@@ -584,11 +609,34 @@ class VisionPoseEstimator:
             if len(valid_poses) < self.min_confidence:
                 smoothed[name] = {'available': False, 'position': None, 'orientation': None}
                 continue
-                
-            # Compute Median Position
+            
+            # Compute Median Position with IQR outlier removal
             positions = torch.stack([p['position'] for p in valid_poses])
-            # Median per dimension
-            median_pos, _ = torch.median(positions, dim=0)
+            
+            # Apply IQR-based outlier filtering if we have enough samples
+            if len(positions) >= 10:
+                # Calculate quartiles for each dimension
+                q25 = torch.quantile(positions, 0.25, dim=0)
+                q75 = torch.quantile(positions, 0.75, dim=0)
+                iqr = q75 - q25
+                
+                # Define outlier bounds (1.5 * IQR)
+                lower_bound = q25 - 1.5 * iqr
+                upper_bound = q75 + 1.5 * iqr
+                
+                # Filter out outliers (keep only inliers for all dimensions)
+                valid_mask = ((positions >= lower_bound) & (positions <= upper_bound)).all(dim=1)
+                filtered_positions = positions[valid_mask]
+                
+                if len(filtered_positions) >= self.min_confidence // 2:
+                    # Use filtered positions if we still have enough data
+                    median_pos, _ = torch.median(filtered_positions, dim=0)
+                else:
+                    # Fall back to using all positions if too many were filtered
+                    median_pos, _ = torch.median(positions, dim=0)
+            else:
+                # Not enough samples for outlier detection, use simple median
+                median_pos, _ = torch.median(positions, dim=0)
             
             # Orientation: take the most recent valid one (heuristic)
             last_valid_quat = valid_poses[-1]['orientation']
