@@ -120,7 +120,7 @@ class VisionPoseEstimator:
         self.device = getattr(env, 'device', getattr(env.unwrapped, 'device', 'cuda:0'))
         
         # Load YOLO model
-        weights_path = "/root/gearboxAssembly/gearbox_training/yolov8n_run/weights/best.pt"
+        weights_path = "/root/gearboxAssembly/gearbox_training/yolov8n_run2/weights/best.pt"
         if os.path.exists(weights_path):
             print(f"[INFO] VisionPoseEstimator: Loading YOLO model from {weights_path}")
             self.model = YOLO(weights_path)
@@ -167,10 +167,10 @@ class VisionPoseEstimator:
         cam_pos_w = cam.data.pos_w[0]
         cam_quat_w = cam.data.quat_w_world[0]
         
-        # Override for Front Camera (Fix from collect_data.py)
+        # Override for Front Camera (Updated to match collect_data.py)
         if camera_name == 'front_camera':
-             cam_pos_w = torch.tensor([1.5, 0.0, 1.5], device=self.device)
-             cam_quat_w = torch.tensor([0.6015, 0.3717, 0.3717, 0.6015], device=self.device)
+             cam_pos_w = torch.tensor([1.2, 0.0, 1.8], device=self.device)
+             cam_quat_w = torch.tensor([0.6768, 0.2049, 0.2049, 0.6768], device=self.device)
 
 
 
@@ -477,11 +477,11 @@ class VisionPoseEstimator:
 
         # Override for Front Camera (Consistency with get_oracle_detections)
         if camera_name == 'front_camera':
-             cam_pos_w = torch.tensor([1.5, 0.0, 1.5], device=self.device)
+             cam_pos_w = torch.tensor([1.2, 0.0, 1.8], device=self.device)
              
-             # Hardcoded quaternion from original file or collect_data
-             # [0.6015, 0.3717, 0.3717, 0.6015]
-             cam_quat_w = torch.tensor([0.6015, 0.3717, 0.3717, 0.6015], device=self.device)
+             # Updated quaternion for eye=[1.2, 0, 1.8], target=[0, 0, 0]
+             # [0.6768, 0.2049, 0.2049, 0.6768]
+             cam_quat_w = torch.tensor([0.6768, 0.2049, 0.2049, 0.6768], device=self.device)
 
         
         # 3. Estimate 3D poses from 2D detections + depth
