@@ -74,7 +74,7 @@ class GalaxeaRulePolicy:
         self.TCP_offset_z = 1.1475 - 1.05661
         self.TCP_offset_x = 0.3864 - 0.3785
         self.table_height = 0.9
-        self.grasping_height = 0.002
+        self.grasping_height = -0.003
         self.lifting_height = 0.2
 
         self.diff_ik_controller, self.left_arm_entity_cfg, self.left_gripper_entity_cfg = self.get_config("left")
@@ -104,6 +104,11 @@ class GalaxeaRulePolicy:
         
         self.current_target_joint_pos = None
         self.step_initial_joint_pos = None
+
+        # Carrier position cache - first valid vision detection
+        # Carrier is physically stationary, so we cache it once
+        self.cached_carrier_pos = None
+        self.cached_carrier_quat = None
 
 
         self.sim_dt = sim.get_physics_dt()
@@ -178,7 +183,7 @@ class GalaxeaRulePolicy:
 
         # Mount the 4th gear to the planetary_carrier. 
         # Another rotation is performed to aid the insertion
-        self.time_step_9 = torch.tensor([0.0, 0.5, 0.5, 5.0, 0.5, 0.5], device=sim.device)
+        self.time_step_9 = torch.tensor([0.0, 0.5, 0.5, 10.0, 0.5, 0.5], device=sim.device)  # Extended rotation for threading
         self.time_step_9 = torch.cumsum(self.time_step_9, dim=0) + self.time_step_8[-1]
         self.count_step_9 = self.time_step_9 / self.sim_dt
         self.count_step_9 = self.count_step_9.int()
@@ -445,24 +450,30 @@ class GalaxeaRulePolicy:
         
 
 
+    def get_carrier_pose(self):
+        """
+        Get carrier position from cache or vision.
+        Carrier is stationary, so we cache the first valid detection.
+        """
+        if self.cached_carrier_pos is not None:
+            return self.cached_carrier_pos, self.cached_carrier_quat
+        
+        # Try to get from vision
+        pose = self.get_object_pose('planetary_carrier')
+        if pose is not None:
+            self.cached_carrier_pos = pose['position'].clone()
+            self.cached_carrier_quat = pose['orientation'].clone()
+            print(f"[INFO] Carrier position cached from vision: {self.cached_carrier_pos}")
+            return self.cached_carrier_pos, self.cached_carrier_quat
+        
+        print("[WARN] Carrier not detected by vision yet")
+        return None, None
+
     def prepare_mounting_plan(self,
                             gear_names: list = None):
         """
-        Plan which gear mounts to which arm and which pin by finding the nearest arm and pin for each gear.
-        Each pin can only be used once.
-
-        Args:
-            sim: Simulation context
-            scene: Interactive scene containing the robot and objects
-            left_arm_entity_cfg: Configuration for left arm
-            right_arm_entity_cfg: Configuration for right arm
-            initial_root_state: Dictionary containing initial states of all objects
-            gear_names: List of gear names to plan for (e.g., ['sun_planetary_gear_1', 'sun_planetary_gear_2'])
-                    If None, defaults to all 4 sun planetary gears
-
-        Returns:
-            gear_to_pin_map: Dictionary mapping gear_name -> {'arm': 'left'/'right', 'pin': pin_index,
-                                                                'pin_world_pos': tensor, 'pin_world_quat': tensor}
+        Plan which gear mounts to which arm and which pin.
+        Uses VISION data (not GT) for all object positions.
         """
 
         # Default to all 4 gears if not specified
@@ -471,22 +482,27 @@ class GalaxeaRulePolicy:
                         'sun_planetary_gear_3', 'sun_planetary_gear_4',
                         'ring_gear', 'planetary_reducer']
 
-        # Get the planetary carrier positions and orientations
-        root_state = self.initial_root_state["planetary_carrier"]
-        planetary_carrier_pos = root_state[:, :3].clone()
-        planetary_carrier_quat = root_state[:, 3:7].clone()
-        num_envs = planetary_carrier_pos.shape[0]
+        # Get the planetary carrier position from VISION (cached)
+        carrier_pos, carrier_quat = self.get_carrier_pose()
+        if carrier_pos is None:
+            print("[WARN] Cannot plan mounting - carrier not detected!")
+            # Use fallback: assume carrier at table center
+            carrier_pos = torch.tensor([0.3864, 0.0, 0.9], device=self.device)
+            carrier_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
+            print(f"[WARN] Using fallback carrier position: {carrier_pos}")
+        
+        num_envs = 1  # For single environment
 
-
-        # Calculate world positions of all pins
+        # Calculate world positions of all pins from carrier pose
         pin_world_positions = []
         pin_world_quats = []
         for pin_local_pos in self.pin_local_positions:
-            pin_local_pos_batch = pin_local_pos.unsqueeze(0).expand(num_envs, -1)
-            pin_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).unsqueeze(0).expand(num_envs, -1)
+            pin_local_pos_batch = pin_local_pos.unsqueeze(0)
+            pin_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).unsqueeze(0)
 
-            pin_world_pos = torch_utils.tf_combine(
-                planetary_carrier_quat, planetary_carrier_pos, pin_quat, pin_local_pos_batch)[1]
+            _, pin_world_pos = torch_utils.tf_combine(
+                carrier_quat.unsqueeze(0), carrier_pos.unsqueeze(0), 
+                pin_quat, pin_local_pos_batch)
 
             pin_world_positions.append(pin_world_pos)
             pin_world_quats.append(pin_quat)
@@ -505,36 +521,26 @@ class GalaxeaRulePolicy:
         # Result mapping
         self.gear_to_pin_map = {}
 
-        # For each gear, find nearest arm and nearest available pin
+        # For each gear, use VISION position to determine arm and pin
         for gear_name in gear_names:
-            if gear_name not in self.initial_root_state:
-                print(f"[WARN] Gear {gear_name} not found in initial_root_state, skipping")
+            
+            # Get gear position from VISION
+            pose = self.get_object_pose(gear_name)
+            if pose is None:
+                print(f"[WARN] Gear {gear_name} not detected by vision, skipping")
                 continue
 
-            # Get gear position
-            gear_pos = self.initial_root_state[gear_name][:, :3].clone()  # shape: (num_envs, 3)
+            gear_pos = pose['position']
 
-            # For the first environment (env_idx=0), calculate distances to both arms
+            # For the first environment (env_idx=0)
             env_idx = 0
-            gear_pos_env = gear_pos[env_idx]
+            gear_pos_env = gear_pos
 
-            # Calculate distance to both arms
-            left_dist = torch.norm(gear_pos_env - left_ee_pos[env_idx])
-            right_dist = torch.norm(gear_pos_env - right_ee_pos[env_idx])
-
-            # Choose the nearest arm
-            # if left_dist < right_dist:
-            #     chosen_arm = 'left'
-            #     chosen_arm_pos = left_ee_pos[env_idx]
-            # else:
-            #     chosen_arm = 'right'
-            #     chosen_arm_pos = right_ee_pos[env_idx]
+            # Choose arm based on gear Y position (left/right of center)
             if gear_pos_env[1] > 0.0:
                 chosen_arm = 'left'
-                chosen_arm_pos = left_ee_pos[env_idx]
             else:
                 chosen_arm = 'right'
-                chosen_arm_pos = right_ee_pos[env_idx]
                 
             if gear_name == 'ring_gear' or gear_name == 'planetary_reducer':
                 self.gear_to_pin_map[gear_name] = {
@@ -555,7 +561,7 @@ class GalaxeaRulePolicy:
                     continue  # Skip occupied pins
 
                 pin_pos = pin_world_positions[env_idx, pin_idx]
-                pin_dist = torch.norm(gear_pos_env - pin_pos)
+                pin_dist = torch.norm(gear_pos_env[:2] - pin_pos[:2])  # XY distance only
 
                 if pin_dist < min_pin_dist:
                     min_pin_dist = pin_dist
@@ -573,14 +579,13 @@ class GalaxeaRulePolicy:
                 'arm': chosen_arm,
                 'pin': nearest_pin_idx,
                 'pin_local_pos': self.pin_local_positions[nearest_pin_idx],
-                'pin_world_pos': pin_world_positions[:, nearest_pin_idx],  # All environments
+                'pin_world_pos': pin_world_positions[:, nearest_pin_idx],
                 'pin_world_quat': pin_world_quats[:, nearest_pin_idx],
             }
 
             print(f"[INFO] {gear_name} -> {chosen_arm} arm, pin_{nearest_pin_idx}")
-            print(f"       Gear pos: {gear_pos_env}, Pin pos: {pin_world_positions[env_idx, nearest_pin_idx]}")
-            print(f"       Distance: {min_pin_dist:.4f}m")
-
+            print(f"       Gear pos (Vision): {gear_pos_env}")
+            print(f"       Pin pos: {pin_world_positions[env_idx, nearest_pin_idx]}")
 
         print(f"self.gear_to_pin_map: {self.gear_to_pin_map}")
 
@@ -763,17 +768,20 @@ class GalaxeaRulePolicy:
                                     gripper_entity_cfg: SceneEntityCfg):
 
         obj_height_offset = 0.0
-        mount_height_offset = 0.010  # Reduced from 0.023 to 0.010 for deeper insertion
+        mount_height_offset = 0.008  # Reduced for deeper insertion (vision compensation)
 
         if gear_id == 4:
-            # Use vision-based pose estimation
-            pose = self.get_object_pose('planetary_carrier')
-            root_state = torch.cat([pose['position'], pose['orientation']]).unsqueeze(0)
+            # Use cached carrier pose
+            carrier_pos, carrier_quat = self.get_carrier_pose()
+            if carrier_pos is None:
+                carrier_pos = torch.tensor([0.3864, 0.0, 0.9], device=self.device)
+                carrier_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
+            root_state = torch.cat([carrier_pos, carrier_quat]).unsqueeze(0)
             if self.count == count_step[0]:
                 self.current_target_position = root_state[:, :3].clone()
             # planetary_carrier_quat = root_state[:, 3:7].clone()
             obj_height_offset = 0.01
-            mount_height_offset = 0.015  # Reduced from 0.03 to 0.015 for deeper insertion
+            mount_height_offset = 0.012  # Reduced for deeper insertion (carrier)
 
         elif gear_id == 6: # Reducer
             # Use vision-based pose estimation
@@ -783,34 +791,29 @@ class GalaxeaRulePolicy:
                 self.current_target_position = root_state[:, :3].clone()
                 self.current_target_orientation = root_state[:, 3:7].clone()
             obj_height_offset = 0.023 + 0.02
-            mount_height_offset = 0.015  # Reduced from 0.025 to 0.015 for deeper insertion
+            mount_height_offset = 0.010  # Reduced for deeper insertion (reducer)
 
 
         else: # Mount the gear on the planetary carrier
-            # root_state = initial_root_state[f"sun_planetary_gear_{gear_id}"]
-
-            # Use vision-based pose estimation
-            pose = self.get_object_pose('planetary_carrier')
-            planetary_carrier_pos = pose['position'].unsqueeze(0)
-            planetary_carrier_quat = pose['orientation'].unsqueeze(0)
-            # original_planetary_carrier_pos = self.initial_root_state["planetary_carrier"][:, :3].clone()
-            # original_planetary_carrier_quat = self.initial_root_state["planetary_carrier"][:, 3:7].clone()
+            # Use cached carrier pose (more stable than per-frame vision)
+            carrier_pos, carrier_quat = self.get_carrier_pose()
+            if carrier_pos is None:
+                # Fallback if somehow not detected
+                carrier_pos = torch.tensor([0.3864, 0.0, 0.9], device=self.device)
+                carrier_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
+            planetary_carrier_pos = carrier_pos.unsqueeze(0)
+            planetary_carrier_quat = carrier_quat.unsqueeze(0)
 
             # Local pose of the pin
             pin_local_pos = self.gear_to_pin_map[f"sun_planetary_gear_{gear_id}"]['pin_local_pos'].clone()
             # Transfer the local pose of the pin to the world frame after the planetary carrier is moved
-            # target_orientation = planetary_carrier_quat.clone()
             target_orientation, pin_world_pos = torch_utils.tf_combine(
                 planetary_carrier_quat, planetary_carrier_pos, 
-                torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.sim.device), pin_local_pos.unsqueeze(0)
+                torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.sim.device), 
+                pin_local_pos.unsqueeze(0)
             )
-            # _, original_pin_world_pos = torch_utils.tf_combine(
-            #     original_planetary_carrier_quat, original_planetary_carrier_pos, 
-            #     torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.sim.device), pin_local_pos.unsqueeze(0)
-            # )
             if self.count == count_step[0]:
                 self.current_target_position = pin_world_pos.clone()
-            # target_orientation = planetary_carrier_quat.clone()
         
         # target_marker.visualize(target_position, target_orientation)
 
@@ -888,19 +891,26 @@ class GalaxeaRulePolicy:
                                     arm_entity_cfg: SceneEntityCfg,
                                     gripper_entity_cfg: SceneEntityCfg):
 
-        root_state = self.planetary_carrier.data.root_state_w.clone()
+        # Use cached carrier pose (NOT GT)
+        carrier_pos, carrier_quat = self.get_carrier_pose()
+        if carrier_pos is None:
+            carrier_pos = torch.tensor([0.3864, 0.0, 0.9], device=self.device)
+            carrier_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
+        
         if self.count == count_step[0]:
-            self.current_target_position = root_state[:, :3].clone()
-        # planetary_carrier_quat = root_state[:, 3:7].clone()
+            self.current_target_position = carrier_pos.unsqueeze(0)
         obj_height_offset = 0.01
-        mount_height_offset = 0.030
+        mount_height_offset = 0.015  # Reduced for deeper insertion (rotation mode)
 
         if gear_id == 5: # Place the ring gear on the carrier
 
-            # Use vision-based pose estimation
-            pose = self.get_object_pose('planetary_carrier')
-            planetary_carrier_pos = pose['position'].unsqueeze(0)
-            planetary_carrier_quat = pose['orientation'].unsqueeze(0)
+            # Use cached carrier pose
+            carrier_pos, carrier_quat = self.get_carrier_pose()
+            if carrier_pos is None:
+                carrier_pos = torch.tensor([0.3864, 0.0, 0.9], device=self.device)
+                carrier_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
+            planetary_carrier_pos = carrier_pos.unsqueeze(0)
+            planetary_carrier_quat = carrier_quat.unsqueeze(0)
 
             local_pos = torch.tensor([0.0, 0.0, 0.0], device=self.sim.device).unsqueeze(0)
 

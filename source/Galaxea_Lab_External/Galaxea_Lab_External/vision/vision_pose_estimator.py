@@ -541,21 +541,10 @@ class VisionPoseEstimator:
         self.update_history(current_poses)
         smoothed_poses = self.get_smoothed_poses()
         
-        # 5. Fallback/Oracle for Planetary Carrier (Not detecting by YOLO yet)
-        if 'planetary_carrier' not in smoothed_poses or not smoothed_poses['planetary_carrier']['available']:
-            # Try to get from obj_dict
-            env_unwrapped = self.env.unwrapped if hasattr(self.env, "unwrapped") else self.env
-            obj_dict = getattr(env_unwrapped, "obj_dict", {})
-            
-            if 'planetary_carrier' in obj_dict:
-                 obj = obj_dict['planetary_carrier']
-                 # Ensure data is populated (it should be if env.step ran)
-                 status = obj.data.root_state_w[0]
-                 smoothed_poses['planetary_carrier'] = {
-                     'position': status[:3].clone(),
-                     'orientation': status[3:7].clone(),
-                     'available': True
-                 }
+        # CRITICAL: Do NOT use GT data for planetary_carrier!
+        # YOLO model is trained to detect planetary_carrier (class 3)
+        # If not detected, it means vision needs more time to accumulate detections
+        # The rule_policy will use cached pose or wait for valid detection
 
         return smoothed_poses
 
