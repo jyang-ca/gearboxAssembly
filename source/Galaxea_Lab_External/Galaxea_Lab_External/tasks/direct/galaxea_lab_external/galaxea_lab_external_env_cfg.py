@@ -112,8 +112,8 @@ class GalaxeaLabExternalEnvCfg(DirectRLEnvCfg):
     right_hand_camera_cfg: CameraCfg = GALAXEA_HAND_CAMERA_CFG.replace(prim_path="/World/envs/env_.*/Robot/right_realsense_link/right_hand_cam/right_hand_cam")
     
     # Global/Front Camera (USER REQUESTED)
-    # Eye: [1.5, 0.0, 1.5], Target: [0.5, 0.0, 1.0]
-    # Quat (w,x,y,z): [0.6015, 0.3717, 0.3717, 0.6015]
+    # Eye: [1.2, 0.0, 1.8], Target: [0.0, 0.0, 0.0]
+    # Quat (w,x,y,z): [0.6768, 0.2049, 0.2049, 0.6768]
     front_camera_cfg: CameraCfg = CameraCfg(
         prim_path="/World/envs/env_.*/front_camera",
         update_period=0.0,
@@ -121,7 +121,7 @@ class GalaxeaLabExternalEnvCfg(DirectRLEnvCfg):
         width=640,
         data_types=["rgb", "distance_to_image_plane"],
         spawn=PinholeCameraCfg(focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 100.0)),
-        offset=CameraCfg.OffsetCfg(pos=(1.5, 0.0, 1.5), rot=(0.6015, 0.3717, 0.3717, 0.6015), convention="opengl"),
+        offset=CameraCfg.OffsetCfg(pos=(1.2, 0.0, 1.8), rot=(0.6768, 0.2049, 0.2049, 0.6768), convention="opengl"),
     )
 
     # scene

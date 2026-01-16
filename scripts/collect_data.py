@@ -33,6 +33,7 @@ parser.add_argument("--task", type=str, default="Template-Galaxea-Lab-External-D
 parser.add_argument("--no_action", action="store_true", default=False, help="Do not apply actions to the robot.")
 parser.add_argument("--dataset_dir", type=str, default="dataset_yolo", help="Directory to save dataset.")
 parser.add_argument("--collect_steps", type=int, default=50, help="Number of steps to collect.")
+parser.add_argument("--start_index", type=int, default=0, help="Starting frame index (for resuming interrupted collection).")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -166,10 +167,19 @@ def main():
         'images': os.path.join(args_cli.dataset_dir, 'images'),
         'labels': os.path.join(args_cli.dataset_dir, 'labels')
     }
-    for d in dirs.values():
-        if os.path.exists(d):
-            shutil.rmtree(d)
-        os.makedirs(d, exist_ok=True)
+    
+    # Only clear directories if starting from index 0 (fresh start)
+    if args_cli.start_index == 0:
+        for d in dirs.values():
+            if os.path.exists(d):
+                shutil.rmtree(d)
+            os.makedirs(d, exist_ok=True)
+    else:
+        # Resuming: just ensure directories exist
+        for d in dirs.values():
+            os.makedirs(d, exist_ok=True)
+        log_debug(f"[INFO] Resuming data collection from index {args_cli.start_index}")
+        print(f"[INFO] Resuming data collection from index {args_cli.start_index}")
     
     # Debug directory
     dirs['debug'] = os.path.join(args_cli.dataset_dir, 'debug_images')
@@ -238,7 +248,8 @@ def main():
         'sun_planetary_gear_3': 0,
         'sun_planetary_gear_4': 0,
         'ring_gear': 1,
-        'planetary_reducer': 2
+        'planetary_reducer': 2,
+        'planetary_carrier': 3
     }
     
     # Approximate bounding box sizes (half-extents)
@@ -250,18 +261,20 @@ def main():
         'sun_planetary_gear_3': 0.035,
         'sun_planetary_gear_4': 0.035,
         'planetary_reducer': 0.04,
+        'planetary_carrier': 0.07,
         # Height approximation (z)
         'height': 0.02 
     }
     
-    step_count = 0
+    step_count = args_cli.start_index
     
     print("[INFO] Starting Data Collection...")
     log_debug("[INFO] Starting Data Collection...")
     
     while simulation_app.is_running():
         log_debug(f"[DEBUG] Loop Step: {step_count}")
-        if step_count >= args_cli.collect_steps:
+        # Check if we've collected the requested number of steps
+        if step_count >= args_cli.start_index + args_cli.collect_steps:
             print("[INFO] Data collection finished.")
             break
             
@@ -322,10 +335,10 @@ def main():
                 log_debug(f"[DEBUG] Camera '{cam_name}' Pose: {cam_pos_w.tolist()}, {cam_quat_w.tolist()}")
                 
                 if cam_name == 'front':
-                     # Force correct pose (debugging why config isn't applying)
-                     cam_pos_w = torch.tensor([1.5, 0.0, 1.5], device=cam.device)
-                     # Quat (w, x, y, z) calculated earlier
-                     cam_quat_w = torch.tensor([0.6015, 0.3717, 0.3717, 0.6015], device=cam.device)
+                     # Force correct pose (eye=[1.2, 0.0, 1.8], target=[0, 0, 0])
+                     cam_pos_w = torch.tensor([1.2, 0.0, 1.8], device=cam.device)
+                     # Quat (w, x, y, z) for looking at origin from [1.2, 0, 1.8]
+                     cam_quat_w = torch.tensor([0.6768, 0.2049, 0.2049, 0.6768], device=cam.device)
                      
                      log_debug(f"[DEBUG] front: Overriding Pose to: {cam_pos_w.tolist()}, {cam_quat_w.tolist()}")
                      log_debug(f"[DEBUG] front: Intrinsic: {intrinsic}")
@@ -389,8 +402,8 @@ def main():
                         
                         measured_depth = depth_img[py, px]
 
-                        # Tolerance
-                        tolerance = 0.05 # 5cm
+                        # Tolerance (increased to 10cm for larger objects like ring_gear)
+                        tolerance = 0.10 # 10cm
                         
                         # Ensure measured_depth is a scalar float
                         if isinstance(measured_depth, torch.Tensor):
@@ -478,3 +491,6 @@ if __name__ == "__main__":
         import traceback
         log_debug(f"[ERROR] Main Failed: {e}\n{traceback.format_exc()}")
         sys.exit(1)
+    finally:
+        # Ensure simulation app closes properly
+        simulation_app.close()

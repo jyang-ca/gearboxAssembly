@@ -77,7 +77,8 @@ def create_yaml():
         'names': {
             0: 'sun_planetary_gear',
             1: 'ring_gear',
-            2: 'planetary_reducer'
+            2: 'planetary_reducer',  # Keep for backward compatibility with existing labels
+            3: 'planetary_carrier'   # Added - critical for pin location detection
         }
     }
     

@@ -88,7 +88,7 @@ def main():
     
     # set camera view for better recording
     if args_cli.video:
-        env.unwrapped.sim.set_camera_view(eye=[1.5, 0.0, 1.5], target=[0.5, 0, 1])
+        env.unwrapped.sim.set_camera_view(eye=[1.2, 0.0, 1.8], target=[0, 0, 0])
 
     # Initialize Vision System (conditionally based on --use_vision flag)
     vision_system = None

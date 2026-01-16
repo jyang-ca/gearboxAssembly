@@ -131,7 +131,8 @@ class VisionPoseEstimator:
         self.class_map = {
             0: 'sun_planetary_gear',
             1: 'ring_gear',
-            2: 'planetary_reducer'
+            2: 'planetary_reducer',
+            3: 'planetary_carrier'
         }
         
         # History Buffer for Smoothing
